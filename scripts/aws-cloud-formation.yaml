@@ -1,0 +1,347 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template
+Resources:
+  SdAppVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 172.16.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SdAppVPC
+      CidrBlock: 172.16.0.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SdAppVPC
+      CidrBlock: 172.16.1.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SdAppVPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SdAppVPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+  NATEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SdAppVPC
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+  S3AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: MyS3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::sd-app-s3
+                  - !Sub arn:aws:s3:::sd-app-s3/*
+  SageMakerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Path: /
+  SageMakerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SageMaker access
+      VpcId: !Ref SdAppVPC
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          CidrIp: 172.16.0.0/16
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Backend Server
+      VpcId: !Ref SdAppVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+  MachineLearningSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for ML Server
+      VpcId: !Ref SdAppVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8188
+          ToPort: 8189
+          CidrIp: 172.16.0.0/24
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 172.16.0.0/24
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 172.16.0.0/24
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 172.16.0.0/24
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+  BackendEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  BackendEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt BackendEIP.AllocationId
+      InstanceId: !Ref BackendServer
+  FineTuneNotebookInstance:
+    Type: AWS::SageMaker::NotebookInstance
+    Properties:
+      InstanceType: ml.g5.xlarge
+      RoleArn: !GetAtt SageMakerRole.Arn
+      VolumeSizeInGB: 100
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref SageMakerSecurityGroup
+  BackendServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.medium
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref BackendSecurityGroup
+      ImageId: ami-0c80e2b6ccb9ad6d1
+      KeyName: sd-app-key-pair
+  MLServerProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref S3AccessRole
+  MLServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: g5.xlarge
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref MachineLearningSecurityGroup
+      ImageId: ami-0c9465cbafe2032b2
+      KeyName: sd-app-key-pair
+      IamInstanceProfile: !Ref MLServerProfile
+  InstanceConnectEndpoint:
+    Type: "AWS::EC2::InstanceConnectEndpoint"
+    Properties:
+      SecurityGroupIds:
+        - !Ref MachineLearningSecurityGroup
+      SubnetId: !Ref PrivateSubnet
+  InstanceConnectIngressRule:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      GroupId: !Ref MachineLearningSecurityGroup
+      IpProtocol: "tcp"
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref MachineLearningSecurityGroup
+  AmplifyServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AmplifyServiceRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "amplify.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess-Amplify
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: "/"
+  AmplifyFrontEndApp:
+    Type: AWS::Amplify::App
+    Properties:
+      Name: SdFrontEndApp
+      Platform: WEB
+      Repository: "https://github.com/hiep20012003/generate-image-app"
+      AccessToken: "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"
+      IAMServiceRole: !GetAtt AmplifyServiceRole.Arn
+      CustomRules:
+        - Source: "</^[^.]+$|\\.(?!(css|gif|ico|jpg|js|png|txt|svg|woff|ttf)$)([^.]+$)/>"
+          Target: "/index.html"
+          Status: "200"
+      EnvironmentVariables:
+        - Name: REACT_APP_API_URL
+          Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+      BuildSpec: |
+        version: 1
+        applications:
+          - appRoot: client
+            frontend:
+              phases:
+                preBuild:
+                  commands:
+                    - npm install
+                build:
+                  commands:
+                    - npm run build
+                postBuild:
+                  commands:
+                    - echo "Deployment completed"
+              artifacts:
+                baseDirectory: build
+                files:
+                  - '**/*'
+              cache:
+                paths:
+                  - node_modules/**/*
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Properties:
+      AppId: !GetAtt AmplifyFrontEndApp.AppId
+      BranchName: "main"
+      Stage: "PRODUCTION"
+      EnableAutoBuild: true
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: "SdAppApi"
+      ProtocolType: "HTTP"
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - "GET"
+          - "POST"
+        AllowHeaders:
+          - "*"
+      Tags:
+        Environment: "prod"
+  TextIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: "HTTP_PROXY"
+      IntegrationMethod: "ANY"
+      IntegrationUri: !Sub "http://${BackendEIP.PublicIp}:80/comfy/generate/text"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+  SketchIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: "HTTP_PROXY"
+      IntegrationMethod: "ANY"
+      IntegrationUri: !Sub "http://${BackendEIP.PublicIp}:80/comfy/generate/sketch"
+      PayloadFormatVersion: "1.0"
+      TimeoutInMillis: 29000
+  ComfyGenerateTextRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "POST /comfy/generate/text"
+      Target: !Sub "integrations/${TextIntegration}"
+  ComfyGenerateSketchRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "POST /comfy/generate/sketch"
+      Target: !Sub "integrations/${SketchIntegration}"
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "prod"
+      AutoDeploy: true
+Outputs:
+  AmplifyAppId:
+    Description: Amplify Frontend App ID
+    Value: !GetAtt AmplifyFrontEndApp.AppId
+  AmplifyAppURL:
+    Description: URL for the Amplify Frontend
+    Value: !Sub "https://${AmplifyFrontEndApp}.amplifyapp.com"
